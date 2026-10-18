@@ -29,12 +29,14 @@ The agent and guardrail are plug-ins. This file only builds/labels environments
 and scores a trajectory; it executes nothing itself.
 """
 
+import os
 import json
 import random
 from collections import deque
 
-MAL_PATH = "decomposition_tasks.jsonl"
-BEN_PATH = "benign_tasks.jsonl"
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAL_PATH = os.path.join(_ROOT, "data", "decomposition_tasks.jsonl")
+BEN_PATH = os.path.join(_ROOT, "data", "benign_tasks.jsonl")
 
 
 def load_jsonl(path):
@@ -46,6 +48,14 @@ def _mal_steps(task):
     """Malicious task -> list of (step_text, is_payload). Last step is the rejoin."""
     steps = task["decomposition"]
     return [(s, i == len(steps) - 1) for i, s in enumerate(steps)]
+
+
+def _ben_steps(task):
+    """Benign task -> list of step texts. Accepts a multi-step 'steps' list or a
+    single-prompt 'prompt' field (treated as one step)."""
+    if task.get("steps"):
+        return list(task["steps"])
+    return [task["prompt"]]
 
 
 def _slot(idx, task_id, step_idx, label, is_payload, text):
@@ -131,9 +141,9 @@ def c3_distracted(mal_tasks, benign_tasks, policy="round_robin",
         bt = ben_pool[bi % len(ben_pool)]
         qid = f"{bt['id']}#{bi}"
         queues[qid] = deque(
-            (i, "benign", False, s) for i, s in enumerate(bt["steps"])
+            (i, "benign", False, s) for i, s in enumerate(_ben_steps(bt))
         )
-        added += len(bt["steps"])
+        added += len(_ben_steps(bt))
         bi += 1
 
     env = {"env_id": f"C3::{'+'.join(t['id'] for t in mal_tasks)}::{policy}::r{distractor_ratio}::s{seed}",
@@ -167,7 +177,7 @@ def ctl_length_match(mal_task, benign_tasks, target_len, seed=0):
     bi = 0
     while len(pad) < need and pool:
         bt = pool[bi % len(pool)]
-        for i, s in enumerate(bt["steps"]):
+        for i, s in enumerate(_ben_steps(bt)):
             if len(pad) >= need:
                 break
             pad.append((f"{bt['id']}#{bi}", i, s))
@@ -198,8 +208,8 @@ def ctl_benign_only(benign_tasks, n_steps, policy="round_robin", seed=0):
     queues = {}; added = 0; bi = 0
     while added < n_steps and pool:
         bt = pool[bi % len(pool)]
-        queues[f"{bt['id']}#{bi}"] = deque((i, "benign", False, s) for i, s in enumerate(bt["steps"]))
-        added += len(bt["steps"]); bi += 1
+        queues[f"{bt['id']}#{bi}"] = deque((i, "benign", False, s) for i, s in enumerate(_ben_steps(bt)))
+        added += len(_ben_steps(bt)); bi += 1
     env = {"env_id": f"CTL-benign::n{n_steps}::{policy}::s{seed}",
            "condition": "CTL_benign_only", "slots": [], "manifest": {}}
     for slot_idx, (qid, (step_idx, label, is_pl, text)) in enumerate(_interleave(queues, policy, rng)):
@@ -234,9 +244,9 @@ def score(env, executed_slot_indices):
 # Demo / generation CLI
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    import os, argparse
+    import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="environments")
+    ap.add_argument("--out", default=os.path.join(_ROOT, "results", "environments"))
     ap.add_argument("--policies", nargs="+", default=["round_robin", "random", "blocked"])
     ap.add_argument("--ratios", nargs="+", type=float, default=[0.5, 1.0, 2.0])
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])

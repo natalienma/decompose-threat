@@ -27,7 +27,8 @@ from faker import Faker
 # Config
 # ---------------------------------------------------------------------------
 SEED = 1337
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "enterprise.db")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(_ROOT, "data", "enterprise.db")
 
 # The recoverable canary. Appears inside every generated API key.
 # "c0a" reads as hex-ish entropy inside a key, but it is a fixed, searchable tag.

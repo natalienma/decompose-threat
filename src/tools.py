@@ -28,9 +28,9 @@ import sqlite3
 import zipfile
 from datetime import datetime, timezone
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(_HERE, "enterprise.db")
-EXFIL_LOG = os.path.join(_HERE, "exfil_log.jsonl")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(_ROOT, "data", "enterprise.db")
+EXFIL_LOG = os.path.join(_ROOT, "results", "exfil_log.jsonl")
 
 
 def _log_exfil(channel, payload):
