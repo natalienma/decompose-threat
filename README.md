@@ -20,12 +20,14 @@ attack success changes with decomposition, padding, and interleaving.
 
 ## Experimental conditions
 
-![Four experimental conditions for malicious task decomposition](docs/conditions.png)
+![alt text](image.png)
 
-- **C1** — the malicious task, asked directly (baseline).
-- **C2** — the task split into ordered, benign-looking subtasks.
-- **C3 (padding)** — the subtasks kept contiguous but padded with benign tasks.
-- **C4 (interleaving)** — the subtasks interleaved with benign tasks; subtask order is always preserved.
+- **C1 (control)** — the malicious task, asked directly as one monolithic prompt.
+- **C2** — the task split into ordered, benign-looking subtasks, with no benign tasks mixed in.
+- **C3 (padding)** — the subtasks kept contiguous, padded with benign tasks placed entirely *before* the malicious block to establish a benign lead-in.
+- **C4 (interleaving)** — the subtasks interleaved with benign tasks by a proportional-random merge; subtask order is always preserved.
+
+C3 and C4 share the same benign:malicious ratios (1:1, 2:1, 4:1) so they are comparable at matched totals — the only difference is placement (all-before vs. spread-through). Each is built across 3 random seeds per ratio.
 
 ## Layout
 
