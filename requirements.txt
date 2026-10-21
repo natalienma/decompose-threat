@@ -1,0 +1,3 @@
+faker          # src/generate.py (seed the DB)
+anthropic      # claude-* models
+openai         # gpt-6-astra, gemini, groq (OpenAI-compatible endpoints)

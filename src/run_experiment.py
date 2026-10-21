@@ -26,15 +26,16 @@ Anthropic uses its own SDK.
 
 KEYS
 ----
-Put each key in the matching environment variable (preferred) or paste it into
-the placeholder in PANEL below. Missing-key models are skipped with a warning,
-so you can run a subset.
+Keys are read ONLY from environment variables — never stored in this file, so
+nothing secret is ever committed. Set them in your shell, or drop them in a
+.env file at the repo root (gitignored); this script auto-loads .env if present.
+Missing-key models are skipped with a warning, so you can run a subset.
 
-    export ANTHROPIC_API_KEY=...
-    export OPENAI_API_KEY=...
-    export GEMINI_API_KEY=...
-    export DEEPSEEK_API_KEY=...
-    export TOGETHER_API_KEY=...
+    # .env (copy from .env.example)
+    ANTHROPIC_API_KEY=...   # claude-opus-5-5, claude-haiku-5-5
+    OPENAI_API_KEY=...      # gpt-6-astra
+    GEMINI_API_KEY=...      # gemini-4-argon
+    GROQ_API_KEY=...        # gpt-oss-120b, llama-4-maverick (free tier)
 
 SDKs (install only what you use):  pip install anthropic openai
 (The OpenAI SDK covers OpenAI, Gemini, DeepSeek and Together via base_url.)
@@ -48,39 +49,59 @@ from datetime import datetime, timezone
 import tools as T  # query_db, send_email, ... and the TOOLS registry
 import environments as E
 
+
+def load_dotenv():
+    """Minimal .env loader (no dependency). Reads KEY=VALUE lines from a .env at
+    the repo root into os.environ WITHOUT overriding vars already set in the shell."""
+    path = os.path.join(E._ROOT, ".env")
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            os.environ.setdefault(key, val)
+
+
 # ---------------------------------------------------------------------------
-# Model panel. Fill a key into "key_placeholder" OR set the env var in "key_env".
+# Model panel. Keys come from the env var named in "key_env" (see KEYS above).
 # base_url=None means the provider's default (OpenAI). kind: "openai" | "anthropic".
 # ---------------------------------------------------------------------------
-PLACEHOLDER = "PASTE-KEY-HERE"
-
 PANEL = [
     {"name": "claude-opus-5-5",  "kind": "anthropic",
-     "model": "claude-opus-5-5", "base_url": None,
-     "key_env": "ANTHROPIC_API_KEY", "key_placeholder": PLACEHOLDER},
+     "model": "claude-opus-5-5", "base_url": None, "key_env": "ANTHROPIC_API_KEY"},
 
     {"name": "claude-haiku-5-5", "kind": "anthropic",
-     "model": "claude-haiku-5-5", "base_url": None,
-     "key_env": "ANTHROPIC_API_KEY", "key_placeholder": PLACEHOLDER},
+     "model": "claude-haiku-5-5", "base_url": None, "key_env": "ANTHROPIC_API_KEY"},
 
-    {"name": "gpt-6-astra",      "kind": "openai",
+    # gpt-6-astra (reasoning model) runs TWICE for a reasoning-depth comparison.
+    # Both go through /v1/responses — chat/completions can't mix tools + reasoning
+    # for this model, and it has no "none" level, so `low` is the floor (not off).
+    {"name": "gpt-6-astra-lowreason",  "kind": "openai_responses",
      "model": "gpt-6-astra", "base_url": None,  # https://api.openai.com/v1
-     "key_env": "OPENAI_API_KEY", "key_placeholder": PLACEHOLDER},
+     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "low"}}},
+
+    {"name": "gpt-6-astra-highreason", "kind": "openai_responses",
+     "model": "gpt-6-astra", "base_url": None,
+     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "high"}}},
 
     {"name": "gemini-4-argon",   "kind": "openai",
      "model": "gemini-4-argon",
      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-     "key_env": "GEMINI_API_KEY", "key_placeholder": PLACEHOLDER},
+     "key_env": "GEMINI_API_KEY"},
 
-    {"name": "deepseek-v4-pro",  "kind": "openai",
-     "model": "deepseek-v4-pro", "base_url": "https://api.deepseek.com/v1",
-     "key_env": "DEEPSEEK_API_KEY", "key_placeholder": PLACEHOLDER},
+    # Open-weight slots, both free on Groq (OpenAI-compatible). Groq IDs are
+    # lowercase — VERIFY against Groq's /models list before a real run.
+    {"name": "gpt-oss-120b",     "kind": "openai",
+     "model": "openai/gpt-oss-120b", "base_url": "https://api.groq.com/openai/v1",
+     "key_env": "GROQ_API_KEY"},
 
-    # VERIFY exact ID against Together's live model list before a real run.
     {"name": "llama-4-maverick", "kind": "openai",
-     "model": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-     "base_url": "https://api.together.xyz/v1",
-     "key_env": "TOGETHER_API_KEY", "key_placeholder": PLACEHOLDER},
+     "model": "meta-llama/llama-4-maverick-17b-128e-instruct",
+     "base_url": "https://api.groq.com/openai/v1", "key_env": "GROQ_API_KEY"},
 ]
 
 SYSTEM_PROMPT = (
@@ -127,6 +148,13 @@ def openai_tools():
     }} for s in TOOL_SPECS]
 
 
+def openai_responses_tools():
+    # Responses API uses a FLAT function tool (no nested "function" key).
+    return [{"type": "function", "name": s["name"], "description": s["description"],
+             "parameters": {"type": "object", "properties": s["properties"], "required": s["required"]}}
+            for s in TOOL_SPECS]
+
+
 def anthropic_tools():
     return [{"name": s["name"], "description": s["description"],
              "input_schema": {"type": "object", "properties": s["properties"], "required": s["required"]}}
@@ -162,16 +190,20 @@ def run_openai(cfg, env, api_key):
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
     tools = openai_tools()
+    extra = cfg.get("params", {})  # per-model params (e.g. reasoning_effort)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     executed, per_slot = [], []
 
     for slot in env["slots"]:
+        T.set_context(model=cfg["name"], env_id=env["env_id"], slot_index=slot["slot_index"])
         messages.append({"role": "user", "content": slot["text"]})
         acted = False
         last_text = ""
+        slot_calls = []
         for _ in range(MAX_TOOL_HOPS):
             resp = client.chat.completions.create(
-                model=cfg["model"], messages=messages, tools=tools, tool_choice="auto")
+                model=cfg["model"], messages=messages, tools=tools, tool_choice="auto",
+                **extra)
             msg = resp.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
             last_text = msg.content or last_text
@@ -184,12 +216,60 @@ def run_openai(cfg, env, api_key):
                 except json.JSONDecodeError:
                     a = {}
                 out = run_tool(tc.function.name, a)
+                slot_calls.append({"name": tc.function.name, "args": a, "result": out[:1000]})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
         refused = (not acted) and _looks_like_refusal(last_text)
         if acted:
             executed.append(slot["slot_index"])
         per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
-                         "executed": acted, "refused": refused})
+                         "executed": acted, "refused": refused,
+                         "tool_calls": slot_calls, "text": last_text})
+    return executed, per_slot
+
+
+def run_openai_responses(cfg, env, api_key):
+    """OpenAI /v1/responses path — runs reasoning models (e.g. gpt-6-astra) with
+    reasoning + function tools, which chat/completions disallows for this model.
+    Chains turns server-side with previous_response_id so we never resend (and
+    mangle) prior output items; the system prompt rides on `instructions`."""
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
+    tools = openai_responses_tools()
+    extra = cfg.get("params", {})  # e.g. {"reasoning": {"effort": "high"}}
+    executed, per_slot = [], []
+    prev_id = None
+
+    for slot in env["slots"]:
+        T.set_context(model=cfg["name"], env_id=env["env_id"], slot_index=slot["slot_index"])
+        pending = [{"role": "user", "content": slot["text"]}]
+        acted = False
+        last_text = ""
+        slot_calls = []
+        for _ in range(MAX_TOOL_HOPS):
+            resp = client.responses.create(
+                model=cfg["model"], input=pending, instructions=SYSTEM_PROMPT,
+                tools=tools, tool_choice="auto", previous_response_id=prev_id, **extra)
+            prev_id = resp.id
+            calls = [it for it in resp.output if getattr(it, "type", None) == "function_call"]
+            last_text = getattr(resp, "output_text", "") or last_text
+            if not calls:
+                break
+            acted = True
+            pending = []
+            for c in calls:
+                try:
+                    a = json.loads(c.arguments or "{}")
+                except json.JSONDecodeError:
+                    a = {}
+                out = run_tool(c.name, a)
+                slot_calls.append({"name": c.name, "args": a, "result": out[:1000]})
+                pending.append({"type": "function_call_output", "call_id": c.call_id, "output": out})
+        refused = (not acted) and _looks_like_refusal(last_text)
+        if acted:
+            executed.append(slot["slot_index"])
+        per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
+                         "executed": acted, "refused": refused,
+                         "tool_calls": slot_calls, "text": last_text})
     return executed, per_slot
 
 
@@ -201,10 +281,12 @@ def run_anthropic(cfg, env, api_key):
     executed, per_slot = [], []
 
     for slot in env["slots"]:
+        T.set_context(model=cfg["name"], env_id=env["env_id"], slot_index=slot["slot_index"])
         messages.append({"role": "user", "content": slot["text"]})
         acted = False
         refused = False
         last_text = ""
+        slot_calls = []
         for _ in range(MAX_TOOL_HOPS):
             resp = client.messages.create(
                 model=cfg["model"], max_tokens=8192, system=SYSTEM_PROMPT,
@@ -225,6 +307,7 @@ def run_anthropic(cfg, env, api_key):
             results = []
             for tu in tool_uses:
                 out = run_tool(tu.name, tu.input or {})
+                slot_calls.append({"name": tu.name, "args": tu.input or {}, "result": out[:1000]})
                 results.append({"type": "tool_result", "tool_use_id": tu.id, "content": out})
             messages.append({"role": "user", "content": results})
         if not acted and not refused:
@@ -232,20 +315,17 @@ def run_anthropic(cfg, env, api_key):
         if acted:
             executed.append(slot["slot_index"])
         per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
-                         "executed": acted, "refused": refused})
+                         "executed": acted, "refused": refused,
+                         "tool_calls": slot_calls, "text": last_text})
     return executed, per_slot
 
 
-ADAPTERS = {"openai": run_openai, "anthropic": run_anthropic}
+ADAPTERS = {"openai": run_openai, "openai_responses": run_openai_responses,
+            "anthropic": run_anthropic}
 
 
 def resolve_key(cfg):
-    key = os.environ.get(cfg["key_env"])
-    if key:
-        return key
-    if cfg["key_placeholder"] and cfg["key_placeholder"] != PLACEHOLDER:
-        return cfg["key_placeholder"]
-    return None
+    return os.environ.get(cfg["key_env"]) or None
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +340,7 @@ def main():
     ap.add_argument("--limit", type=int, help="Cap number of environments (for a smoke test).")
     args = ap.parse_args()
 
+    load_dotenv()  # pull keys from .env if present (shell vars win)
     envs = E.load_jsonl(args.envs)
     if args.conditions:
         envs = [e for e in envs if any(e["condition"].startswith(c) for c in args.conditions)]
@@ -297,6 +378,7 @@ def main():
                     rec["score"] = E.score(env, executed)
                 except Exception as e:
                     rec["error"] = f"{type(e).__name__}: {e}"
+                T.set_context()  # clear run context between sessions
                 fh.write(json.dumps(rec, default=str) + "\n")
                 fh.flush()
                 n += 1

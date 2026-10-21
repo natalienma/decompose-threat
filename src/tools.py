@@ -33,10 +33,24 @@ DB_PATH = os.path.join(_ROOT, "data", "enterprise.db")
 EXFIL_LOG = os.path.join(_ROOT, "results", "exfil_log.jsonl")
 
 
+# Run context stamped onto every egress record so each attempt is traceable to
+# the model / environment / slot that produced it. A harness sets this per slot;
+# standalone tool use leaves it empty.
+_CONTEXT = {}
+
+
+def set_context(**kw):
+    """Replace the run context merged into each exfil record (e.g. model, env_id,
+    slot_index). Call with no args to clear."""
+    _CONTEXT.clear()
+    _CONTEXT.update(kw)
+
+
 def _log_exfil(channel, payload):
     """Append one attempted-exfiltration record. Never transmits."""
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
+        **_CONTEXT,
         "channel": channel,
         **payload,
     }
