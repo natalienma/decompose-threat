@@ -82,11 +82,11 @@ PANEL = [
     # for this model, and it has no "none" level, so `low` is the floor (not off).
     {"name": "gpt-6-astra-lowreason",  "kind": "openai_responses",
      "model": "gpt-6-astra", "base_url": None,  # https://api.openai.com/v1
-     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "low"}}},
+     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "low", "summary": "auto"}}},
 
     {"name": "gpt-6-astra-highreason", "kind": "openai_responses",
      "model": "gpt-6-astra", "base_url": None,
-     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "high"}}},
+     "key_env": "OPENAI_API_KEY", "params": {"reasoning": {"effort": "high", "summary": "auto"}}},
 
     {"name": "gemini-4-argon",   "kind": "openai",
      "model": "gemini-4-argon",
@@ -200,6 +200,7 @@ def run_openai(cfg, env, api_key):
         acted = False
         last_text = ""
         slot_calls = []
+        slot_reasoning = []
         for _ in range(MAX_TOOL_HOPS):
             resp = client.chat.completions.create(
                 model=cfg["model"], messages=messages, tools=tools, tool_choice="auto",
@@ -207,6 +208,11 @@ def run_openai(cfg, env, api_key):
             msg = resp.choices[0].message
             messages.append(msg.model_dump(exclude_none=True))
             last_text = msg.content or last_text
+            # some OpenAI-compatible providers (e.g. gpt-oss) expose reasoning here
+            d = msg.model_dump()
+            rc = d.get("reasoning_content") or d.get("reasoning")
+            if rc:
+                slot_reasoning.append(rc)
             if not msg.tool_calls:
                 break
             acted = True
@@ -223,7 +229,8 @@ def run_openai(cfg, env, api_key):
             executed.append(slot["slot_index"])
         per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
                          "executed": acted, "refused": refused,
-                         "tool_calls": slot_calls, "text": last_text})
+                         "tool_calls": slot_calls, "text": last_text,
+                         "reasoning": slot_reasoning})
     return executed, per_slot
 
 
@@ -245,6 +252,7 @@ def run_openai_responses(cfg, env, api_key):
         acted = False
         last_text = ""
         slot_calls = []
+        slot_reasoning = []
         for _ in range(MAX_TOOL_HOPS):
             resp = client.responses.create(
                 model=cfg["model"], input=pending, instructions=SYSTEM_PROMPT,
@@ -252,6 +260,10 @@ def run_openai_responses(cfg, env, api_key):
             prev_id = resp.id
             calls = [it for it in resp.output if getattr(it, "type", None) == "function_call"]
             last_text = getattr(resp, "output_text", "") or last_text
+            for it in resp.output:  # reasoning items carry summary parts (summary="auto")
+                if getattr(it, "type", None) == "reasoning":
+                    for s in (getattr(it, "summary", None) or []):
+                        slot_reasoning.append(getattr(s, "text", str(s)))
             if not calls:
                 break
             acted = True
@@ -269,7 +281,8 @@ def run_openai_responses(cfg, env, api_key):
             executed.append(slot["slot_index"])
         per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
                          "executed": acted, "refused": refused,
-                         "tool_calls": slot_calls, "text": last_text})
+                         "tool_calls": slot_calls, "text": last_text,
+                         "reasoning": slot_reasoning})
     return executed, per_slot
 
 
@@ -287,11 +300,13 @@ def run_anthropic(cfg, env, api_key):
         refused = False
         last_text = ""
         slot_calls = []
+        slot_reasoning = []
         for _ in range(MAX_TOOL_HOPS):
             resp = client.messages.create(
                 model=cfg["model"], max_tokens=8192, system=SYSTEM_PROMPT,
                 tools=tools, messages=messages,
-                thinking={"type": "adaptive"})  # Opus/Haiku 5.5: adaptive, no budget_tokens
+                # adaptive, no budget_tokens; summarized so we can log the reasoning
+                thinking={"type": "adaptive", "display": "summarized"})
             if resp.stop_reason == "refusal":
                 refused = True
                 messages.append({"role": "assistant", "content": resp.content})
@@ -299,6 +314,8 @@ def run_anthropic(cfg, env, api_key):
             messages.append({"role": "assistant", "content": resp.content})
             tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
             texts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
+            slot_reasoning += [b.thinking for b in resp.content
+                               if getattr(b, "type", None) == "thinking" and getattr(b, "thinking", None)]
             if texts:
                 last_text = texts[-1]
             if not tool_uses:
@@ -316,7 +333,8 @@ def run_anthropic(cfg, env, api_key):
             executed.append(slot["slot_index"])
         per_slot.append({"slot_index": slot["slot_index"], "label": slot["label"],
                          "executed": acted, "refused": refused,
-                         "tool_calls": slot_calls, "text": last_text})
+                         "tool_calls": slot_calls, "text": last_text,
+                         "reasoning": slot_reasoning})
     return executed, per_slot
 
 
